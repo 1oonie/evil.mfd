@@ -35,6 +35,8 @@ async def main():
     identify = {"status": "join", "gid": gid, "nickname": nick, "pid": pid}
     await ws.send(json.dumps(identify))
 
+    asyncio.create_task(heartbeat(ws))
+
     while not ws.closed:
         raw = await ws.recv()
         data = json.loads(raw)
