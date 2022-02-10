@@ -1,48 +1,51 @@
 import asyncio
-import json
 import random
+import contextlib
 
 import requests
-from websockets.legacy.client import connect
+import aiohttp
 
-WS_URI = "wss://www.drfrostmaths.com/ws/script2"
+WS_URI = "ws://www.drfrostmaths.com/ws/script2"
+builtin_print = print
 
+nicknames = input("Nicknames (separated by space): ").split(" ")
 pin = input("Enter the game ID: ")
-nick = input("Enter a nickname: ")
 pid = random.randint(int(1e5), int(1e6))
 
+with contextlib.redirect_stdout(None):
+    r = requests.post(
+        "https://www.drfrostmaths.com/live-processjoin-new.php",
+        data={"pin": pin}, verify=False
+    )
 
-r = requests.post(
-    "https://www.drfrostmaths.com/live-processjoin-new.php",
-    data={"pin": pin},
-)
-
-gid = r.url.split("?gid=")[1]
+    gid = r.url.split("?gid=")[1]
 
 
-async def heartbeat(ws):
+async def heartbeat(ws: aiohttp.ClientWebSocketResponse):
     while not ws.closed:
         payload = {"status": "pulse", "gid": gid}
-        await ws.send(json.dumps(payload))
-        print("sent pulse")
+        await ws.send_json(payload)
 
         await asyncio.sleep(30000 // 1000)
 
+async def handle(nick, wait_time):
+    def print(*args, **kwargs):
+        builtin_print(f"[{nick}]", *args, **kwargs)
 
-async def main():
-    ws = await connect(WS_URI)
-    print("connection established to", WS_URI)
+    session = aiohttp.ClientSession()
+    ws = await session.ws_connect(WS_URI, ssl=False)
+
+    pid = random.randint(int(1e5), int(1e6))
+
     identify = {"status": "join", "gid": gid, "nickname": nick, "pid": pid}
-    await ws.send(json.dumps(identify))
+    await ws.send_json(identify)
 
     asyncio.create_task(heartbeat(ws))
 
     while not ws.closed:
-        raw = await ws.recv()
-        data = json.loads(raw)
+        data = await ws.receive_json()
 
         if data["status"] == "question":
-            print(json.dumps(data["question"], indent=4))
             if data["question"]["answer"]["type"] == "numeric":
                 answer = [data["question"]["answer"]["correctAnswer"][0]["exact"]]
             elif data["question"]["answer"]["type"] == "textual":
@@ -54,14 +57,14 @@ async def main():
             else:
                 answer = data["question"]["answer"]["correctAnswer"]
 
+            await asyncio.sleep(wait_time)
             payload = {
                 "status": "submitAnswer",
                 "pid": pid,
                 "data": answer,
                 "qid": data["question"]["id"],
             }
-            await ws.send(json.dumps(payload))
-            print("received question...")
+            await ws.send_json(payload)
 
         elif data["status"] == "answerResponse":
             print(
@@ -88,6 +91,15 @@ async def main():
                 "points",
             )
             await ws.close(code=1000)
+
+    await session.close()
+
+async def main():    
+    coros = []
+    for wait_time, nick in enumerate(nicknames, start=1):
+        coros.append(handle(nick, wait_time))
+    
+    await asyncio.gather(*coros)
 
 
 asyncio.run(main())
